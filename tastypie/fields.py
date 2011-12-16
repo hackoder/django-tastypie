@@ -149,6 +149,12 @@ class ApiField(object):
                 if bundle.related_obj and bundle.related_name in (self.attribute, self.instance_name):
                     return bundle.related_obj
 
+            if getattr(self, 'is_o2o', False) and not getattr(self, 'is_m2m', False):
+                # We've got an FK (or alike field) & a possible parent object.
+                # Check for it.
+                if bundle.related_obj and bundle.related_name in (self.attribute, self.instance_name):
+                    return bundle.related_obj
+
             if self.blank:
                 return None
             elif self.attribute and getattr(bundle.obj, self.attribute, None):
@@ -385,6 +391,7 @@ class RelatedField(ApiField):
     """
     dehydrated_type = 'related'
     is_related = True
+    is_o2o = False
     self_referential = False
     help_text = 'A related resource. Can be either a URI or set of nested resource data.'
 
@@ -649,10 +656,44 @@ class ForeignKey(ToOneField):
 
 class OneToOneField(ToOneField):
     """
-    A convenience subclass for those who prefer to mirror ``django.db.models``.
-    """
-    pass
+    Provides access to related data via foreign key (OneToOneField).
 
+    OneToOneField requires different handling due to the absence of
+    RelatedManager on either side of the relationship
+    """
+    help_text = 'A single related resource. Can be either a URI or set of nested resource data.'
+
+    def __init__(self, to, attribute, related_name=None, default=NOT_PROVIDED,
+                 null=False, blank=False, readonly=False, full=False,
+                 unique=False, help_text=None):
+        super(OneToOneField, self).__init__(
+            to, attribute, related_name=related_name, default=default,
+            null=null, blank=blank, readonly=readonly, full=full,
+            unique=unique, help_text=help_text
+        )
+        self.is_o2o= True
+
+    def hydrate_o2o(self, bundle):
+        if self.readonly:
+            return None
+
+        if bundle.data.get(self.instance_name) is None:
+            if self.blank:
+                return []
+            elif self.null:
+                return []
+            else:
+                raise ApiFieldError("The '%s' field has no data and doesn't allow a null value." % self.instance_name)
+
+        kwargs = {
+            'request': bundle.request,
+        }
+
+        if self.related_name:
+            kwargs['related_obj'] = bundle.obj
+            kwargs['related_name'] = self.related_name
+        
+        return self.build_related_resource(bundle.data.get(self.instance_name), **kwargs)
 
 class ToManyField(RelatedField):
     """

@@ -711,7 +711,8 @@ class Resource(object):
                     # cause things to blow up.
                     if not getattr(field_object, 'is_related', False):
                         setattr(bundle.obj, field_object.attribute, value)
-                    elif not getattr(field_object, 'is_m2m', False):
+                    elif not getattr(field_object, 'is_m2m', False) and \
+                            not getattr(field_object, 'is_o2o', False):
                         if value is not None:
                             setattr(bundle.obj, field_object.attribute, value.obj)
                         elif field_object.blank:
@@ -731,6 +732,35 @@ class Resource(object):
 
         Must return the modified bundle.
         """
+        return bundle
+
+    def hydrate_o2o(self, bundle):
+        """
+        Populate OneToOne data on the instance.
+        """
+        if bundle.obj is None:
+            raise HydrationError("You must call 'full_hydrate' before attempting to run 'hydrate_m2m' on %r." % self)
+
+        for field_name, field_object in self.fields.items():
+            if not getattr(field_object, 'is_o2o', False):
+                continue
+
+            if field_object.attribute:
+                # Note that we only hydrate the data, leaving the instance
+                # unmodified. It's up to the user's code to handle this.
+                # The ``ModelResource`` provides a working baseline
+                # in this regard.
+                bundle.data[field_name] = field_object.hydrate_o2o(bundle)
+
+        for field_name, field_object in self.fields.items():
+            if not getattr(field_object, 'is_o2o', False):
+                continue
+
+            method = getattr(self, "hydrate_%s" % field_name, None)
+
+            if method:
+                method(bundle)
+
         return bundle
 
     def hydrate_m2m(self, bundle):
@@ -1788,6 +1818,10 @@ class ModelResource(Resource):
         # Save the main object.
         bundle.obj.save()
 
+        # Save OneToOneFields
+        o2o_bundle = self.hydrate_o2o(bundle)
+        self.save_o2o(o2o_bundle)
+
         # Now pick up the M2M bits.
         m2m_bundle = self.hydrate_m2m(bundle)
         self.save_m2m(m2m_bundle)
@@ -1893,7 +1927,7 @@ class ModelResource(Resource):
 
     def save_related(self, bundle):
         """
-        Handles the saving of related non-M2M data.
+        Handles the saving of related non-M2M and non-O2O data.
 
         Calling assigning ``child.parent = parent`` & then calling
         ``Child.save`` isn't good enough to make sure the ``parent``
@@ -1910,6 +1944,9 @@ class ModelResource(Resource):
             if getattr(field_object, 'is_m2m', False):
                 continue
 
+            if getattr(field_object, 'is_o2o', False):
+                continue
+
             if not field_object.attribute:
                 continue
 
@@ -1924,6 +1961,41 @@ class ModelResource(Resource):
 
             # Because sometimes it's ``None`` & that's OK.
             if related_obj:
+                related_obj.save()
+                setattr(bundle.obj, field_object.attribute, related_obj)
+
+    def save_o2o(self, bundle):
+        """
+        Handles the saving of OneToOne fields.
+        """
+        for field_name, field_object in self.fields.items():
+            if not getattr(field_object, 'is_related', False):
+                continue
+
+            if not getattr(field_object, 'is_o2o', False):
+                continue
+
+            if not getattr(field_object, 'related_name', False):
+                continue
+
+            if getattr(field_object, 'is_m2m', False):
+                continue
+
+            if not field_object.attribute:
+                continue
+
+            if field_object.blank:
+                continue
+
+            # Get the object.
+            try:
+                related_obj = bundle.data[field_object.attribute].obj
+            except:
+                related_obj = None
+
+            # Because sometimes it's ``None`` & that's OK.
+            if related_obj and getattr(field_object, 'related_name', False):
+                setattr(related_obj, getattr(field_object, 'related_name'), bundle.obj)
                 related_obj.save()
                 setattr(bundle.obj, field_object.attribute, related_obj)
 
